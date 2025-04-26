@@ -1,7 +1,7 @@
 """
-Test Pipeline Functionality
+Test Pipeline Functionality with Technical Indicators
 
-Tests the core data pipeline with actual data processing.
+Tests the full data pipeline with technical indicator calculation.
 """
 
 import os
@@ -15,9 +15,10 @@ from balance_breaker.src.data_pipeline import (
     TimeAligner,
     GapDetector
 )
+from balance_breaker.src.data_pipeline.processors.feature_creator import FeatureCreator
 
 def test_full_pipeline():
-    print("Testing Balance Breaker Data Pipeline...\n")
+    print("Testing Balance Breaker Data Pipeline with Technical Indicators...\n")
     
     # 1. Create orchestrator
     print("1. Creating orchestrator...")
@@ -26,7 +27,6 @@ def test_full_pipeline():
     
     # 2. Register components
     print("2. Registering components...")
-    # Adjust path if needed based on your project structure
     repo_path = os.path.join('balance_breaker', 'data', 'price')
     if not os.path.exists(repo_path):
         print(f"   ! Warning: Repository path {repo_path} does not exist")
@@ -35,6 +35,7 @@ def test_full_pipeline():
             repo_path = 'data/price'
             print(f"   ✓ Using alternative path: {repo_path}")
     
+    # Register all required components
     price_loader = PriceLoader({'repository_path': repo_path})
     orchestrator.register_component(price_loader)
     print(f"   ✓ Registered PriceLoader with repo path: {repo_path}")
@@ -50,6 +51,15 @@ def test_full_pipeline():
     normalizer = DataNormalizer()
     orchestrator.register_component(normalizer)
     print("   ✓ Registered DataNormalizer")
+    
+    feature_creator = FeatureCreator({
+        'return_periods': [1, 5, 10, 20],
+        'ma_periods': [5, 10, 20, 50, 200],
+        'create_lag_features': True,
+        'rolling_windows': [5, 10, 20]
+    })
+    orchestrator.register_component(feature_creator)
+    print("   ✓ Registered FeatureCreator for technical indicators")
     
     aligner = TimeAligner()
     orchestrator.register_component(aligner)
@@ -74,16 +84,18 @@ def test_full_pipeline():
     test_pair = available_pairs[0] if available_pairs else 'EURUSD'
     print(f"   ✓ Using {test_pair} for testing\n")
     
-    # 4. Define request
-    print("4. Creating pipeline request...")
+    # 4. Define request with indicators
+    print("4. Creating pipeline request with technical indicators...")
     request = {
         'pairs': [test_pair],
         'start_date': '2023-01-01',
-        'end_date': '2023-12-31',  # Using a wider date range
+        'end_date': '2023-12-31',
         'data_type': 'price',
-        'align': True
+        'align': True,
+        'indicators': ['ma', 'momentum', 'volatility'],  # Request indicators
+        'detect_gaps': True  # Enable gap detection
     }
-    print(f"   ✓ Request created for pair: {test_pair}\n")
+    print(f"   ✓ Request created for pair: {test_pair} with technical indicators\n")
     
     # 5. Create pipeline
     print("5. Creating pipeline...")
@@ -133,7 +145,33 @@ def print_dataframe_info(pair, df):
         print(f"   ✓ {pair} data processed successfully:")
         print(f"     - Shape: {df.shape} (rows, columns)")
         print(f"     - Date range: {df.index.min()} to {df.index.max()}")
-        print(f"     - Columns: {', '.join(df.columns.tolist())}")
+        
+        # Group and display columns by type
+        base_cols = [col for col in df.columns if col in ['open', 'high', 'low', 'close', 'volume']]
+        ma_cols = [col for col in df.columns if 'ma_' in col]
+        return_cols = [col for col in df.columns if 'return_' in col]
+        volatility_cols = [col for col in df.columns if 'volatility_' in col]
+        momentum_cols = [col for col in df.columns if 'momentum_' in col]
+        other_cols = [col for col in df.columns if col not in base_cols and 
+                     col not in ma_cols and col not in return_cols and 
+                     col not in volatility_cols and col not in momentum_cols]
+        
+        print(f"     - Base columns: {', '.join(base_cols)}")
+        if ma_cols:
+            print(f"     - Moving Averages: {len(ma_cols)} indicators")
+            print(f"       {', '.join(ma_cols[:5])}{'...' if len(ma_cols) > 5 else ''}")
+        if return_cols:
+            print(f"     - Return indicators: {len(return_cols)} indicators")
+            print(f"       {', '.join(return_cols[:5])}{'...' if len(return_cols) > 5 else ''}")
+        if volatility_cols:
+            print(f"     - Volatility indicators: {len(volatility_cols)} indicators")
+            print(f"       {', '.join(volatility_cols[:5])}{'...' if len(volatility_cols) > 5 else ''}")
+        if momentum_cols:
+            print(f"     - Momentum indicators: {len(momentum_cols)} indicators")
+            print(f"       {', '.join(momentum_cols[:5])}{'...' if len(momentum_cols) > 5 else ''}")
+        if other_cols:
+            print(f"     - Other columns: {len(other_cols)} columns")
+            print(f"       {', '.join(other_cols[:5])}{'...' if len(other_cols) > 5 else ''}")
         
         # Calculate and display basic statistics
         if 'close' in df.columns:
@@ -143,6 +181,19 @@ def print_dataframe_info(pair, df):
         missing = df.isna().sum().sum()
         if missing > 0:
             print(f"     - Warning: Contains {missing} missing values")
+        
+        # Print sample of data if available
+        if 'ma_20' in df.columns and 'ma_50' in df.columns and len(df) > 0:
+            print("\n     Sample Indicator Analysis:")
+            latest_idx = df.index[-1]
+            ma20 = df.loc[latest_idx, 'ma_20']
+            ma50 = df.loc[latest_idx, 'ma_50']
+            trend = "Bullish" if ma20 > ma50 else "Bearish"
+            print(f"       Latest MA20: {ma20:.4f}, MA50: {ma50:.4f} (Trend: {trend})")
+            
+            if 'volatility_20' in df.columns:
+                vol = df.loc[latest_idx, 'volatility_20']
+                print(f"       20-day Volatility: {vol:.6f}")
         print()
     else:
         print(f"   ! Invalid DataFrame for {pair}")

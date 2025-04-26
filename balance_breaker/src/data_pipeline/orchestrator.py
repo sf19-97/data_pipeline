@@ -150,21 +150,80 @@ class DataPipelineOrchestrator:
         if 'DataNormalizer' in self.components['processor']:
             pipeline.append(self.components['processor']['DataNormalizer'])
         
-        # 4. Add data aligner
+        # 4. Add gap detector if requested
+        if request.get('detect_gaps', False) and 'GapDetector' in self.components['validator']:
+            pipeline.append(self.components['validator']['GapDetector'])
+        
+        # 5. Add data aligner
         if request.get('align', True) and 'TimeAligner' in self.components['aligner']:
             pipeline.append(self.components['aligner']['TimeAligner'])
         
-        # 5. Add indicators if requested
+        # 6. Add indicators if requested
         indicators = request.get('indicators', [])
-        for indicator in indicators:
-            if indicator in self.components['indicator']:
-                pipeline.append(self.components['indicator'][indicator])
+        if indicators:
+            # Create a set to track added indicators to avoid duplicates
+            added_indicators = set()
+            
+            for indicator_name in indicators:
+                # First, check if the indicator exists directly in our components
+                if indicator_name in self.components['indicator']:
+                    pipeline.append(self.components['indicator'][indicator_name])
+                    added_indicators.add(indicator_name)
+                else:
+                    # Try to get from indicator registry
+                    # This only works if the indicator_registry is imported
+                    try:
+                        from balance_breaker.src.data_pipeline.indicators.modular_base import indicator_registry
+                        indicator_class = indicator_registry.get_indicator_by_name(indicator_name)
+                        if indicator_class and indicator_name not in added_indicators:
+                            # Create an instance of the indicator
+                            indicator = indicator_class()
+                            # Register it with orchestrator for future use
+                            self.register_component(indicator)
+                            # Add to pipeline
+                            pipeline.append(indicator)
+                            added_indicators.add(indicator_name)
+                    except ImportError:
+                        # If modular indicators not available, just log a warning
+                        self.logger.debug(f"Modular indicator system not available, skipping '{indicator_name}'")
+            
+            # Handle missing indicators
+            missing = [ind for ind in indicators if ind not in added_indicators]
+            if missing:
+                self.logger.warning(f"Requested indicators not found: {', '.join(missing)}")
         
-        # 6. Add serializer if needed
+        # 7. Add serializer if needed
         if request.get('export', False) and 'DataExporter' in self.components['serializer']:
             pipeline.append(self.components['serializer']['DataExporter'])
         
         return pipeline
+    
+    def register_modular_indicators(self):
+        """
+        Register all available modular indicators with the orchestrator
+        
+        Returns:
+            Number of indicators registered
+        """
+        try:
+            from balance_breaker.src.data_pipeline.indicators.modular_base import indicator_registry
+            
+            # Get all available indicators from registry
+            indicator_names = indicator_registry.list_all_indicators()
+            
+            for name in indicator_names:
+                indicator_class = indicator_registry.get_indicator_by_name(name)
+                if indicator_class:
+                    # Create indicator instance
+                    indicator = indicator_class()
+                    # Register with orchestrator
+                    self.register_component(indicator)
+                    self.logger.debug(f"Registered indicator: {name}")
+            
+            return len(indicator_names)
+        except ImportError:
+            self.logger.warning("Modular indicator system not available")
+            return 0
     
     def execute_pipeline(self, pipeline: List[PipelineComponent], request: Dict[str, Any]) -> Any:
         """Execute a pipeline and return the results

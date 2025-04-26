@@ -39,13 +39,17 @@ orchestrator.register_component(DataValidator())
 orchestrator.register_component(DataNormalizer())
 orchestrator.register_component(TimeAligner())
 
+# Register modular indicators (auto-discovers all available indicators)
+orchestrator.register_modular_indicators()
+
 # Define request
 request = {
     'pairs': ['USDJPY'],
     'start_date': '2022-01-01',
     'end_date': '2023-01-01',
     'data_type': 'price',
-    'align': True
+    'align': True,
+    'indicators': ['rsi', 'ma', 'macd']  # Request specific indicators by name
 }
 
 # Create and execute pipeline
@@ -61,7 +65,8 @@ def load_data_for_backtest(
     pairs,
     start_date,
     end_date=None,
-    repository_config=None
+    repository_config=None,
+    indicators=None
 ):
     """Load and process data for backtesting"""
     # Create request context
@@ -72,7 +77,7 @@ def load_data_for_backtest(
         'repository_config': repository_config,
         'data_type': 'price',
         'align': True,
-        'indicators': ['EconomicIndicators', 'TechnicalIndicators', 'CompositeIndicators']
+        'indicators': indicators or ['rsi', 'ma', 'macd', 'volatility']
     }
     
     # Create and execute pipeline
@@ -88,6 +93,7 @@ The loaders are responsible for reading data from repositories:
 
 - **PriceLoader**: Loads price data for currency pairs
 - **MacroLoader**: Loads macroeconomic indicators
+- **CustomLoader**: Flexible loader for custom data sources
 
 ```python
 # Configure price loader
@@ -100,11 +106,15 @@ orchestrator.register_component(price_loader)
 Validators check data quality and report issues:
 
 - **DataValidator**: Validates price and macro data quality
+- **GapDetector**: Detects and reports time gaps in data
+- **QualityChecker**: Checks for data quality issues
 
 ```python
-# Validation results are added to the context
-if 'validation' in context and context['validation']['status'] == 'warning':
-    print("Data quality warnings:", context['validation']['issues'])
+# Enable gap detection
+request = {
+    'detect_gaps': True,
+    # other parameters...
+}
 ```
 
 ### Processors
@@ -112,6 +122,8 @@ if 'validation' in context and context['validation']['status'] == 'warning':
 Processors transform data into a standardized format:
 
 - **DataNormalizer**: Normalizes price and macro data format
+- **FeatureCreator**: Creates trading features from data
+- **DataTransformer**: Applies transformations to data
 
 ```python
 # Normalization ensures consistent column names (open, high, low, close)
@@ -138,10 +150,14 @@ resampled_data = resampler.process(price_data, request)
 
 ### Indicators
 
-Indicators calculate derived metrics:
+Balance Breaker supports two indicator architectures:
 
+#### Original Monolithic Indicators
+
+Comprehensive classes that calculate multiple indicators:
+
+- **TechnicalIndicators**: All technical indicators in one class
 - **EconomicIndicators**: Economic indicators (yield spreads, inflation differentials)
-- **TechnicalIndicators**: Technical indicators (moving averages, RSI, MACD)
 - **CompositeIndicators**: Balance Breaker specific indicators (precession, market mood)
 
 ```python
@@ -151,6 +167,27 @@ tech_indicators = TechnicalIndicators({
     'rsi_period': 14
 })
 price_data_with_indicators = tech_indicators.process(price_data, {})
+```
+
+#### Modular Indicators
+
+Individual, focused classes for specific indicators:
+
+- **RSIIndicator**: Relative Strength Index
+- **MovingAverageIndicator**: Simple and exponential moving averages
+- **MACDIndicator**: Moving Average Convergence Divergence
+- **MomentumIndicator**: Price momentum and rate of change
+- **VolatilityIndicator**: Price volatility measures
+
+```python
+# Register all modular indicators
+orchestrator.register_modular_indicators()
+
+# Request specific indicators by name
+request = {
+    # other parameters...
+    'indicators': ['rsi', 'ma', 'macd', 'momentum', 'volatility']
+}
 ```
 
 ### Serializers
@@ -182,6 +219,11 @@ The pipeline typically returns a dictionary with:
 for pair, price_df in result['price'].items():
     print(f"Price data for {pair}: {len(price_df)} rows")
     
+    # Print technical indicator columns
+    tech_cols = [col for col in price_df.columns if col in ['RSI', 'SMA_20', 'MACD']]
+    if tech_cols:
+        print(f"Technical indicators: {', '.join(tech_cols)}")
+    
     # Access aligned macro data
     if pair in result['aligned_macro']:
         macro_df = result['aligned_macro'][pair]
@@ -192,6 +234,24 @@ for pair, price_df in result['price'].items():
             print("Last 5 precession values:")
             print(macro_df['precession'].tail(5))
 ```
+
+## Choosing Between Indicator Architectures
+
+Balance Breaker supports both monolithic and modular indicator systems. Here's when to use each:
+
+### Use Original Monolithic Indicators When:
+
+- You need complex interdependent calculations
+- Performance optimization is critical 
+- You need the full suite of indicators in one pass
+- Your indicators require cross-indicator knowledge
+
+### Use Modular Indicators When:
+
+- You need specific, individual indicators
+- You want clear separation of responsibilities
+- You want to extend the system with custom indicators
+- You need better testability and maintainability
 
 ## Advanced Usage
 
@@ -214,7 +274,40 @@ cache_manager = CacheManager({
 orchestrator.register_component(cache_manager)
 ```
 
-### Custom Components
+### Creating Custom Modular Indicators
+
+You can create custom modular indicators:
+
+```python
+from balance_breaker.src.core.interface_registry import implements
+from balance_breaker.src.data_pipeline.indicators.modular_base import ModularIndicator, register_indicator
+
+@register_indicator
+@implements("IndicatorCalculator")
+class MyCustomIndicator(ModularIndicator):
+    """My custom indicator implementation"""
+    
+    indicator_name = "mycustom"  # Used in requests
+    indicator_category = "technical"
+    required_columns = {"close"}
+    
+    def __init__(self, parameters=None):
+        default_params = {
+            'period': 14,
+        }
+        super().__init__(parameters or default_params)
+    
+    def calculate_indicator(self, df, **kwargs):
+        period = self.parameters.get('period', 14)
+        price = df['close']
+        
+        # Custom calculation logic
+        result = price.rolling(window=period).mean() / price.rolling(window=period).std()
+        
+        return {'MyCustom': result}
+```
+
+### Custom Pipeline Components
 
 You can create custom components by implementing the PipelineComponent interface:
 
@@ -234,7 +327,9 @@ class MyCustomProcessor(PipelineComponent):
 ## Best Practices
 
 1. **Register components in order**: Components are executed in registration order
-2. **Validate data**: Always include validators to detect issues early
-3. **Use caching**: Enable caching for better performance
-4. **Handle errors**: Wrap pipeline execution in try/except blocks
-5. **Set appropriate context**: Provide all necessary information in the request context
+2. **Use register_modular_indicators()**: Register all modular indicators with one call
+3. **Request indicators by name**: Specify exactly which indicators you need
+4. **Validate data**: Always include validators to detect issues early
+5. **Use caching**: Enable caching for better performance
+6. **Handle errors**: Wrap pipeline execution in try/except blocks
+7. **Set appropriate context**: Provide all necessary information in the request context
