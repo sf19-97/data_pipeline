@@ -1,5 +1,5 @@
 # Export key components for easier imports
-from .orchestrator import DataPipelineOrchestrator, PipelineComponent, PipelineError
+from .data_pipeline_orchestrator import DataPipelineOrchestrator, PipelineComponent, PipelineError
 from .loaders.price_loader import PriceLoader
 from .loaders.macro_loader import MacroLoader
 from .validators.data_validator import DataValidator

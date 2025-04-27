@@ -301,3 +301,120 @@ class DataSerializer(PipelineComponent):
         
         # Return original data
         return data
+
+
+@interface
+class DataRegistry(ABC):
+    """
+    Interface for data registry components
+    
+    Data registries manage data registration, lookup, and lifecycle.
+    """
+    
+    @abstractmethod
+    def register_data(self, data: Any, metadata: Dict[str, Any]) -> str:
+        """
+        Register data in the registry
+        
+        Args:
+            data: Data to register
+            metadata: Metadata for the data
+            
+        Returns:
+            Data ID
+        """
+        pass
+    
+    @abstractmethod
+    def get_data(self, data_id: str) -> Optional[Any]:
+        """
+        Get data by ID
+        
+        Args:
+            data_id: ID of the data to retrieve
+            
+        Returns:
+            Data if found, None otherwise
+        """
+        pass
+    
+    @abstractmethod
+    def find_data(self, criteria: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Find data matching criteria
+        
+        Args:
+            criteria: Dictionary of search criteria
+            
+        Returns:
+            List of data entries with metadata
+        """
+        pass
+    
+    @abstractmethod
+    def update_data(self, data_id: str, data: Any) -> bool:
+        """
+        Update existing data
+        
+        Args:
+            data_id: ID of the data to update
+            data: New data
+            
+        Returns:
+            True if update was successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    def remove_data(self, data_id: str) -> bool:
+        """
+        Remove data from the registry
+        
+        Args:
+            data_id: ID of the data to remove
+            
+        Returns:
+            True if removal was successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    def create_relationship(self, source_id: str, target_id: str, 
+                          relationship_type: str) -> bool:
+        """
+        Create relationship between data products
+        
+        Args:
+            source_id: Source data ID
+            target_id: Target data ID
+            relationship_type: Type of relationship
+            
+        Returns:
+            True if relationship was created, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    def get_related_data(self, data_id: str, 
+                       relationship_type: Optional[str] = None) -> List[str]:
+        """
+        Get related data IDs
+        
+        Args:
+            data_id: Data ID to find relations for
+            relationship_type: Optional filter by relationship type
+            
+        Returns:
+            List of related data IDs
+        """
+        pass
+    
+    @abstractmethod
+    def clean_expired_data(self) -> int:
+        """
+        Remove expired data
+        
+        Returns:
+            Number of data entries removed
+        """
+        pass

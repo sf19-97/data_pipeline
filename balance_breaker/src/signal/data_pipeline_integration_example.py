@@ -1,8 +1,8 @@
 """
-Data Pipeline Integration Example
+Data Pipeline and Signal Subsystem Integration Example
 
-This example demonstrates how the Signal Subsystem integrates with the Data Pipeline
-to create a complete workflow from data loading to signal generation.
+This example demonstrates how the refactored Data Pipeline subsystem integrates with
+the Signal Subsystem to create a complete workflow from data loading to signal generation.
 """
 
 import logging
@@ -14,12 +14,18 @@ from balance_breaker.src.core.integration_tools import event_bus
 # Import Data Pipeline components
 from balance_breaker.src.data_pipeline import (
     DataPipelineOrchestrator,
+    InMemoryDataRegistry,
     PriceLoader,
     MacroLoader,
     DataValidator,
     DataNormalizer,
-    TimeAligner,
-    TechnicalIndicators
+    TimeAligner
+)
+from balance_breaker.src.data_pipeline.indicators.technical_modular import (
+    RSIIndicator,
+    MovingAverageIndicator,
+    MACDIndicator,
+    VolatilityIndicator
 )
 
 # Import Signal Subsystem components
@@ -46,20 +52,67 @@ def setup_data_pipeline() -> DataPipelineOrchestrator:
     """Set up the data pipeline for loading and processing market data"""
     logger.info("Setting up data pipeline...")
     
-    # Create data pipeline orchestrator
-    orchestrator = DataPipelineOrchestrator()
+    # Create the data registry
+    registry = InMemoryDataRegistry({
+        'auto_clean_interval': 3600,  # 1 hour
+        'enable_auto_clean': True,
+        'max_data_age': 86400*7      # 7 days
+    })
     
-    # Register components
-    orchestrator.register_component(PriceLoader())
-    orchestrator.register_component(DataValidator())
-    orchestrator.register_component(DataNormalizer())
-    orchestrator.register_component(TechnicalIndicators({
-        'sma_periods': [8, 21, 50, 200],  # Match our signal generator parameters
-        'rsi_period': 14,
-        'macd_params': (12, 26, 9),
-        'bbands_params': (20, 2),
-        'generate_all': True
+    # Create data pipeline orchestrator
+    orchestrator = DataPipelineOrchestrator({
+        'auto_register_data': True,
+        'enable_event_processing': True
+    })
+    
+    # Set the registry
+    orchestrator.set_registry(registry)
+    
+    # Register components using type-specific methods
+    orchestrator.register_loader(PriceLoader())
+    orchestrator.register_loader(MacroLoader())
+    orchestrator.register_validator(DataValidator())
+    orchestrator.register_processor(DataNormalizer())
+    orchestrator.register_aligner(TimeAligner())
+    
+    # Register individual indicators
+    orchestrator.register_indicator(RSIIndicator({'period': 14}))
+    orchestrator.register_indicator(MovingAverageIndicator({
+        'periods': [8, 21, 50, 200],
+        'types': ['simple', 'exponential']
     }))
+    orchestrator.register_indicator(MACDIndicator({
+        'fast_period': 12,
+        'slow_period': 26,
+        'signal_period': 9
+    }))
+    orchestrator.register_indicator(VolatilityIndicator({
+        'atr_period': 14,
+        'calculate_bbands': True
+    }))
+    
+    # Create standard pipeline configurations
+    price_analysis_pipeline = {
+        'id': 'price_analysis',
+        'loaders': ['PriceLoader'],
+        'validators': ['DataValidator'],
+        'processors': ['DataNormalizer'],
+        'aligners': ['TimeAligner'],
+        'indicators': ['RSIIndicator', 'MovingAverageIndicator', 'MACDIndicator', 'VolatilityIndicator'],
+        'auto_register_data': True
+    }
+    
+    macro_analysis_pipeline = {
+        'id': 'macro_analysis',
+        'loaders': ['MacroLoader'],
+        'validators': ['DataValidator'],
+        'processors': ['DataNormalizer'],
+        'auto_register_data': True
+    }
+    
+    # Register pipeline configurations
+    orchestrator.create_pipeline(price_analysis_pipeline)
+    orchestrator.create_pipeline(macro_analysis_pipeline)
     
     logger.info("Data pipeline setup complete")
     return orchestrator
@@ -170,19 +223,18 @@ def load_market_data(
     """
     logger.info(f"Loading market data for {pairs} from {start_date} to {end_date or 'now'}")
     
-    # Create data request
-    request = {
+    # Create execution context
+    context = {
         'pairs': pairs,
         'start_date': start_date,
         'end_date': end_date,
-        'data_type': 'price',
         'timeframe': timeframe,
-        'indicators': ['TechnicalIndicators']
+        'use_cache': True,
+        'cache_ttl': 3600  # 1 hour
     }
     
-    # Create and execute pipeline
-    pipeline = dp_orchestrator.create_pipeline(request)
-    result = dp_orchestrator.execute_pipeline(pipeline, request)
+    # Execute the price analysis pipeline with context
+    result = dp_orchestrator.execute_pipeline('price_analysis', context)
     
     # Log data summary
     if isinstance(result, dict) and 'price' in result:
@@ -194,7 +246,10 @@ def load_market_data(
 
 def generate_signals(
     signal_orchestrator: SignalOrchestrator,
-    market_data: Dict[str, Any],
+    dp_orchestrator: DataPipelineOrchestrator,
+    pairs: List[str],
+    start_date: str,
+    end_date: str = None,
     timeframe: str = "1h"
 ) -> Dict[str, List[Signal]]:
     """
@@ -202,15 +257,25 @@ def generate_signals(
     
     Args:
         signal_orchestrator: Signal orchestrator
-        market_data: Market data from data pipeline
+        dp_orchestrator: Data pipeline orchestrator
+        pairs: List of currency pairs
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format (optional)
         timeframe: Timeframe for signal generation
     
     Returns:
         Dictionary of signals by pipeline
     """
-    logger.info(f"Generating signals for {timeframe} timeframe")
+    logger.info(f"Generating signals for {pairs} at {timeframe} timeframe")
     
-    results = {}
+    # Use the dedicated integration method to get data optimized for signal generation
+    market_data = dp_orchestrator.get_data_for_signals({
+        'pairs': pairs,
+        'start_date': start_date,
+        'end_date': end_date,
+        'timeframe': timeframe,
+        'indicators': ['RSIIndicator', 'MovingAverageIndicator', 'MACDIndicator', 'VolatilityIndicator']
+    })
     
     # Create signal context
     context = {
@@ -221,11 +286,13 @@ def generate_signals(
             pair: {
                 'price': df.iloc[-1].to_dict(),
                 'atr': df['ATR'].iloc[-1] if 'ATR' in df.columns else None,
-                'volatility': 'high' if df['ATR'].iloc[-1] > df['ATR'].mean() * 1.5 else 'normal'
-                if 'ATR' in df.columns else 'unknown'
+                'volatility': 'high' if ('ATR' in df.columns and df['ATR'].iloc[-1] > df['ATR'].mean() * 1.5) 
+                             else 'normal' if 'ATR' in df.columns else 'unknown'
             } for pair, df in market_data.get('price', {}).items()
         }
     }
+    
+    results = {}
     
     # Execute technical pipeline
     technical_signals = signal_orchestrator.execute_pipeline(
@@ -295,56 +362,83 @@ def analyze_signal_results(results: Dict[str, List[Signal]]) -> None:
             logger.info(f"  Example: {example.symbol} {example.direction.name} "
                       f"({example.strength.name} strength, {example.metadata.confidence.name} confidence)")
             
-            if hasattr(example, 'interpretation'):
+            if hasattr(example, 'interpretation') and example.interpretation:
                 logger.info(f"  Interpretation: {example.interpretation}")
 
 
-def event_based_integration_demo():
+def event_based_integration_demo(
+    dp_orchestrator: DataPipelineOrchestrator,
+    signal_orchestrator: SignalOrchestrator
+):
     """
     Demonstrate event-based integration between subsystems
+    
+    Args:
+        dp_orchestrator: Data pipeline orchestrator
+        signal_orchestrator: Signal orchestrator
     """
     logger.info("Setting up event-based integration demo")
     
-    # Set up subsystems
-    dp_orchestrator = setup_data_pipeline()
-    signal_orchestrator = setup_signal_subsystem()
-    
-    # Define event handler for data pipeline updates
-    def handle_data_pipeline_update(event_data):
-        logger.info("Received data pipeline update event")
+    # Define event handler for data pipeline events
+    def handle_pipeline_executed(event_data):
+        pipeline_id = event_data.get('pipeline_id')
+        logger.info(f"Received pipeline executed event for pipeline: {pipeline_id}")
         
-        data = event_data.get('data')
-        context = event_data.get('context', {})
+        # Only process certain pipelines
+        if pipeline_id != 'price_analysis':
+            return
         
-        if data:
-            # Add timeframe to context if not present
-            if 'timeframe' not in context:
-                context['timeframe'] = '1h'  # Default timeframe
-            
-            # Process data through signal subsystem
-            signals = signal_orchestrator.handle_data_update(data, context)
-            
-            logger.info(f"Generated {len(signals)} signals from data pipeline event")
-    
-    # Subscribe to data pipeline update events
-    event_bus.subscribe('data_pipeline_update', handle_data_pipeline_update)
-    
-    # Simulate a data pipeline update event
-    pairs = ['EURUSD', 'USDJPY']
-    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    
-    # Load data
-    data = load_market_data(dp_orchestrator, pairs, start_date)
-    
-    # Publish a data pipeline update event
-    event_bus.publish('data_pipeline_update', {
-        'data': data,
-        'context': {
-            'timeframe': '1h',
-            'data_source': 'data_pipeline',
+        # Get the data from the registry
+        if not dp_orchestrator.registry:
+            logger.warning("No data registry available")
+            return
+        
+        # Find the latest price data in the registry
+        results = dp_orchestrator.registry.find_data({
+            'data_type': 'price',
+            'tags': 'pipeline_result',
+            'active_only': True
+        })
+        
+        if not results:
+            logger.warning("No price data found in registry")
+            return
+        
+        # Use the most recent data
+        latest_data = max(results, key=lambda x: x['metadata'].get('creation_time', datetime.min))
+        
+        # Get timeframe from metadata
+        timeframe = latest_data['metadata'].get('timeframe', '1h')
+        pairs = latest_data['metadata'].get('pairs', [])
+        
+        logger.info(f"Processing data for {pairs} at {timeframe} timeframe")
+        
+        # Process data through signal subsystem
+        context = {
+            'timeframe': timeframe,
+            'data_source': 'event_based',
             'pairs': pairs
         }
-    })
+        
+        # Generate signals
+        signals = signal_orchestrator.handle_data_update(latest_data['data'], context)
+        
+        logger.info(f"Generated {len(signals)} signals from data pipeline event")
+        
+        # Analyze the generated signals
+        if signals:
+            pipeline_results = {'event_based': signals}
+            analyze_signal_results(pipeline_results)
+    
+    # Subscribe to pipeline executed events
+    event_bus.subscribe('pipeline_executed', handle_pipeline_executed)
+    
+    # Simulate data being processed through pipeline
+    pairs = ['EURUSD', 'USDJPY']
+    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+    
+    # Load data through pipeline
+    load_market_data(dp_orchestrator, pairs, start_date, timeframe='1h')
     
     logger.info("Event-based integration demo complete")
 
@@ -365,21 +459,37 @@ def main():
     timeframes = ['1h', '4h', '1d']
     
     for timeframe in timeframes:
-        # Load market data using data pipeline
-        market_data = load_market_data(
-            dp_orchestrator, pairs, start_date, timeframe=timeframe
-        )
+        logger.info(f"Processing {timeframe} timeframe data")
         
-        # Generate signals using signal subsystem
+        # Generate signals using the integrated approach
         signals = generate_signals(
-            signal_orchestrator, market_data, timeframe=timeframe
+            signal_orchestrator, dp_orchestrator, 
+            pairs, start_date, timeframe=timeframe
         )
         
         # Analyze signal results
         analyze_signal_results(signals)
     
     # Show event-based integration
-    event_based_integration_demo()
+    event_based_integration_demo(dp_orchestrator, signal_orchestrator)
+    
+    # Demonstrate registry capabilities
+    if dp_orchestrator.registry:
+        # Print registry statistics
+        stored_data = dp_orchestrator.registry.find_data({'active_only': True})
+        logger.info(f"Data registry contains {len(stored_data)} active data entries")
+        
+        # Group by data type
+        data_types = {}
+        for entry in stored_data:
+            data_type = entry['metadata'].get('data_type', 'unknown')
+            data_types[data_type] = data_types.get(data_type, 0) + 1
+        
+        logger.info(f"Data types in registry: {data_types}")
+        
+        # Clean expired data
+        cleaned = dp_orchestrator.registry.clean_expired_data()
+        logger.info(f"Cleaned {cleaned} expired data entries from registry")
     
     logger.info("Data pipeline integration example complete")
 

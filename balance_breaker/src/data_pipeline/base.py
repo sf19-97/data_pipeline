@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Union
 from balance_breaker.src.core.interface_registry import implements, interface
 from balance_breaker.src.core.error_handling import ErrorHandler
 from balance_breaker.src.core.parameter_manager import ParameterizedComponent
-from balance_breaker.src.data_pipeline.interfaces import (
+from balance_breaker.src.data_pipeline.data_pipeline_interfaces import (
     PipelineComponent, DataLoader, DataValidator, 
     DataProcessor, DataAligner, IndicatorCalculator, DataSerializer
 )
